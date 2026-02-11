@@ -592,7 +592,19 @@ router.get(
 
       if (isNaN(yearNum) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
         return next(createError('Parâmetros year e month inválidos', 400));
-      } // CHAMA A FUNÇÃO CORRIGIDA DO BANCO DE DADOS (DatabaseService)
+      }
+
+      // Trava de segurança: não permite visualizar meses anteriores a Jan/2026
+      if (yearNum < 2026) {
+        return next(
+          createError(
+            'A visualização de dados anteriores a Janeiro de 2026 não é permitida.',
+            400,
+          ),
+        );
+      }
+
+      // CHAMA A FUNÇÃO CORRIGIDA DO BANCO DE DADOS (DatabaseService)
 
       const result = await DatabaseService.getMonthlyTransactions(
         userId,
@@ -620,16 +632,12 @@ router.get(
           (installmentsData && installmentsData.totalInstallments > 1);
 
         const totalInstallments =
-          installmentsData?.totalInstallments ||
-          tx.total_installments ||
-          1;
+          installmentsData?.totalInstallments || tx.total_installments || 1;
 
         if (isInstallment && totalInstallments > 1) {
           // Determina a data de início da primeira parcela
           let startDateStr =
-            tx.start_date ||
-            tx.transaction_date ||
-            installmentsData?.startDate;
+            tx.start_date || tx.transaction_date || installmentsData?.startDate;
 
           if (!startDateStr) return; // pula malformados
           const startDate = parseISO(startDateStr as string); // Itera para gerar parcelas virtuais
@@ -839,7 +847,9 @@ router.get(
           transaction.transaction_date || transaction.start_date,
         );
         const totalInstallments = transaction.total_installments || 1;
-        const installmentsDataPlan = parseInstallments(transaction.installments);
+        const installmentsDataPlan = parseInstallments(
+          transaction.installments,
+        );
         const paidInstallments =
           installmentsDataPlan?.paidInstallments ??
           (transaction.installment_number && transaction.installment_number > 0

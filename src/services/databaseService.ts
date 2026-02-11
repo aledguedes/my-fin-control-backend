@@ -795,52 +795,7 @@ export class DatabaseService {
       .eq('id', id)
       .eq('user_id', userId);
 
-    // 5. Criar transação financeira
-    // Buscar categoria "Alimentação"
-    const categoryResult = await db
-      .from('tbl_financial_categories')
-      .select('id')
-      .eq('name', 'Alimentação')
-      .eq('user_id', userId)
-      .eq('type', 'expense')
-      .single();
-
-    if (!categoryResult.data) {
-      // Se não achar, tenta criar ou falha? Original falhava.
-      return {
-        data: null,
-        error: {
-          message: 'Categoria "Alimentação" não encontrada para o usuário.',
-        },
-      };
-    }
-    const categoryId = categoryResult.data.id;
-
-    const description = `Compras: ${listName || 'Lista'}`;
-    const installmentsData = {
-      totalInstallments: 1,
-      paidInstallments: 1,
-      startDate: completedAt,
-    };
-
-    await db.from('tbl_transactions').insert({
-      description,
-      amount: totalAmount,
-      type: 'expense',
-      category_id: categoryId,
-      user_id: userId,
-      transaction_date: completedAt,
-      is_installment: false,
-      total_installments: 1,
-      installment_number: 1,
-      start_date: completedAt,
-      installments: installmentsData,
-      is_recurrent: false,
-      recurrence_start_date: null,
-      payment_method: null,
-    });
-
-    // 6. Retornar lista atualizada
+    // 5. Retornar lista atualizada
     const finalResult = await db
       .from('tbl_shopping_lists')
       .select('*')
@@ -854,7 +809,6 @@ export class DatabaseService {
         totalAmount,
         listName,
         completedAt,
-        categoryId,
       },
       error: null,
     };

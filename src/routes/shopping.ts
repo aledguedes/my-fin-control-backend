@@ -644,7 +644,7 @@ router.put(
         const statusCode =
           result.error.message === 'Lista não encontrada' ? 404 : 500;
         return next(createError(result.error.message, statusCode));
-      } // Transação financeira já criada atomicamente pelo service
+      } // Transação financeira NÃO é mais criada automaticamente
 
       res.json({ list: result?.data });
     } catch (error) {
@@ -1411,9 +1411,8 @@ router.post(
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const userId = req.user!.userId;
-      const result = await DatabaseService.cleanupOrphanedShoppingTransactions(
-        userId,
-      );
+      const result =
+        await DatabaseService.cleanupOrphanedShoppingTransactions(userId);
 
       if (result?.error) {
         return next(createError(result.error.message, 500));
