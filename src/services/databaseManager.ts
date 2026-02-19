@@ -1,4 +1,3 @@
-```
 import Database from 'better-sqlite3';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
