@@ -1,5 +1,11 @@
 import { databaseManager } from '../config/database';
-import { parseISO, differenceInMonths, isBefore, isAfter } from 'date-fns';
+import {
+  parseISO,
+  differenceInMonths,
+  isBefore,
+  isAfter,
+  addMonths,
+} from 'date-fns';
 
 const db = databaseManager.getDatabase();
 const dbConfig = databaseManager.getConfig();
@@ -309,34 +315,34 @@ export class DatabaseService {
         const startDateStr =
           installments?.startDate || tx.start_date || tx.transaction_date;
 
-        // --- NOVO: Lógica para calcular parcelas pagas automaticamente ---
-        let paidInstallments = 0;
-        if (startDateStr) {
-          const startDate = parseISO(startDateStr);
-          const today = new Date();
+        // --- Lógica MANUAL: Usa o valor gravado no banco ou fallback para o que já existia ---
+        let paidInstallments = tx.paid_installments ?? 0;
 
-          if (
-            isBefore(startDate, today) ||
-            startDate.getTime() === today.getTime()
-          ) {
-            // Calcula quantos meses se passaram desde a data de início
-            // +1 porque a primeira parcela conta no mês de início
-            paidInstallments = differenceInMonths(today, startDate) + 1;
-          } else {
-            // Se a data de início for no futuro
-            paidInstallments = 0;
-          }
+        // Fallback caso o banco esteja com valor legado (opcional, mas bom para transição)
+        if (
+          paidInstallments === 0 &&
+          installments?.paidInstallments !== undefined
+        ) {
+          paidInstallments = installments.paidInstallments;
         }
 
-        // Garante que o número de parcelas pagas não exceda o total
-        paidInstallments = Math.min(paidInstallments, totalInstallments);
-
-        // Se houver registro manual de parcelas pagas e for maior que o cálculo, usa o manual
-        const manualPaid =
-          installments?.paidInstallments ?? (tx.installment_number - 1 || 0);
-        paidInstallments = Math.max(paidInstallments, manualPaid);
-
         const installmentAmount = tx.amount / totalInstallments;
+
+        // Calcular status dinâmico baseado na data atual e parcelas pagas
+        let status = 'UPCOMING';
+        if (paidInstallments >= totalInstallments) {
+          status = 'PAID';
+        } else if (startDateStr) {
+          const startDate = parseISO(startDateStr);
+          // Verifica se a PRÓXIMA parcela a ser paga (índice = paidInstallments) está atrasada
+          const nextInstallmentDate = addMonths(startDate, paidInstallments);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+
+          if (isBefore(nextInstallmentDate, today)) {
+            status = 'OVERDUE';
+          }
+        }
 
         return {
           id: tx.id,
@@ -350,7 +356,7 @@ export class DatabaseService {
             totalInstallments - paidInstallments,
           ),
           startDate: startDateStr,
-          status: paidInstallments >= totalInstallments ? 'concluído' : 'ativo',
+          status,
           type: tx.type,
           category_id: tx.category_id,
         };
@@ -1321,6 +1327,21 @@ export class DatabaseService {
       data: { ...list, items: itemsInsert.data || [] },
       error: null,
     };
+  }
+
+  static async updatePaymentStatus(
+    id: string | number,
+    userId: string | number,
+    paidInstallments: number,
+  ) {
+    const result = await db
+      .from('tbl_transactions')
+      .update({ paid_installments: paidInstallments })
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select()
+      .single();
+    return { data: result.data, error: result.error };
   }
 
   static getConfig() {

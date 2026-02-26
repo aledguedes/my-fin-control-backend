@@ -104,3 +104,7 @@ export const monthlyViewQuerySchema = Joi.object({
   year: Joi.number().integer().min(2020).max(2030).required(),
   month: Joi.number().integer().min(1).max(12).required(),
 });
+
+export const updatePaymentSchema = Joi.object({
+  paid_installments: Joi.number().integer().min(0).required(),
+});
