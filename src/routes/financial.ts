@@ -5,6 +5,7 @@ import {
   transactionSchema,
   financialCategorySchema,
   monthlyViewQuerySchema,
+  updatePaymentSchema,
 } from '../validation/schemas';
 import { validateRequest, validateQuery } from '../validation/index';
 import { normalizeTransactionPayload } from '../middleware/normalizeTransactionPayload';
@@ -608,7 +609,11 @@ router.get(
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const userId = req.user!.userId;
-      const { year: qYear, month: qMonth } = req.query; // Validar parâmetros (mantido por robustez, embora o Joi já faça)
+      const { year: qYear, month: qMonth, showHidden: qShowHidden } = req.query;
+
+      // Converte para boolean de forma robusta e sem erros de tipo
+      const showHidden =
+        qShowHidden !== undefined && String(qShowHidden) === 'true';
 
       if (!qYear || !qMonth) {
         return next(
@@ -677,10 +682,23 @@ router.get(
             const dueMonth = due.getMonth() + 1; // Se o vencimento for no mês consultado, adiciona à view
 
             if (dueYear === year && dueMonth === month) {
+              const paidCount =
+                tx.paid_installments || installmentsData?.paidInstallments || 0;
+              const isPaid = i <= paidCount;
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+
+              let status = 'upcoming';
+              if (isPaid) {
+                status = 'paid';
+              } else if (isBefore(due, today)) {
+                status = 'overdue';
+              }
+
               monthlyView.push({
                 id: `${tx.id}_inst_${i}`,
                 parent_id: tx.id,
-                description: `${tx.description} (${i}/${totalInstallments})`, // Adicionado o número da parcela na descrição
+                description: `${tx.description} (${i}/${totalInstallments})`,
                 amount: (tx.amount || 0) / totalInstallments,
                 type: tx.type,
                 date: due.toISOString().split('T')[0],
@@ -688,6 +706,7 @@ router.get(
                 total_installments: totalInstallments,
                 category_id: tx.category_id,
                 isInstallment: true,
+                status: status.toUpperCase(), // Retorna em inglês (PAID, OVERDUE, UPCOMING)
               });
             }
           }
@@ -697,17 +716,51 @@ router.get(
         const isRecurrent = tx.is_recurrent === 1 || tx.is_recurrent === true;
         if (isRecurrent) {
           const installmentsDataRecurrent = parseInstallments(tx.installments);
+
+          // Tenta pegar a data de início de vários campos possíveis
           let recurrenceStart =
             tx.recurrence_start_date ||
+            tx.start_date ||
+            tx.transaction_date ||
             installmentsDataRecurrent?.startDate ||
             null;
 
           if (!recurrenceStart) return;
-          const start = parseISO(recurrenceStart as string); // Cria a data de ocorrência para o mês/ano consultado, mantendo o dia do mês de início // Note: month - 1 é porque Date usa 0-11 para meses
+          const start = parseISO(recurrenceStart as string);
 
-          const occurrence = new Date(year, month - 1, getDate(start)); // Garante que a ocorrência não seja antes da data de início real da recorrência
+          // Cria a data de ocorrência para o mês/ano consultado
+          const occurrence = new Date(year, month - 1, getDate(start));
 
           if (isBefore(occurrence, start)) return;
+
+          // Lógica de Exclusão (Pular meses específicos ou marcar como ocultos)
+          const excludedMonths = tx.excluded_months || [];
+          const currentMonthKey = `${year}-${month.toString().padStart(2, '0')}`;
+          const isExcluded = excludedMonths.includes(currentMonthKey);
+
+          if (isExcluded && !showHidden) {
+            return; // Se estiver excluído e não pedimos para mostrar, pula
+          }
+
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+
+          // Lógica de "Contador de Meses" para Recorrentes:
+          // Calculamos quantos meses se passaram desde o início da recorrência até o mês visualizado
+          const monthDiff =
+            (year - start.getFullYear()) * 12 +
+            (month - 1 - start.getMonth()) +
+            1;
+
+          const paidCount = tx.paid_installments || 0;
+          const isPaid = paidCount >= monthDiff;
+
+          let status = 'UPCOMING';
+          if (isPaid) {
+            status = 'PAID';
+          } else if (isBefore(occurrence, today)) {
+            status = 'OVERDUE';
+          }
 
           monthlyView.push({
             id: tx.id,
@@ -717,9 +770,13 @@ router.get(
             date: occurrence.toISOString().split('T')[0],
             category_id: tx.category_id,
             isRecurrent: true,
+            status: status,
+            installment_number: monthDiff, // Enviamos o "mês" da recorrência para o front usar no PATCH
+            paid_installments: paidCount,
+            isHidden: isExcluded,
           });
           return;
-        } // --- Lógica para Transações Únicas (Filtradas pelo DB) --- // A transação já foi filtrada pelo DB para cair no mês correto
+        }
 
         const txDate = tx.transaction_date || tx.date;
         if (txDate) {
@@ -728,6 +785,19 @@ router.get(
             parsed.getFullYear() === year &&
             parsed.getMonth() + 1 === month
           ) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            // Lógica MANUAL para contas únicas: paid_installments >= 1 significa PAGA
+            const isPaid = (tx.paid_installments || 0) >= 1;
+
+            let status = 'UPCOMING';
+            if (isPaid) {
+              status = 'PAID';
+            } else if (isBefore(parsed, today)) {
+              status = 'OVERDUE';
+            }
+
             monthlyView.push({
               id: tx.id,
               description: tx.description,
@@ -736,6 +806,8 @@ router.get(
               date: txDate,
               category_id: tx.category_id,
               isInstallment: false,
+              status: status,
+              paid_installments: tx.paid_installments || 0,
             });
           }
         }
@@ -745,6 +817,9 @@ router.get(
       let totalExpense = 0;
 
       monthlyView.forEach((item) => {
+        // Ignora itens ocultos do cálculo do sumário
+        if (item.isHidden) return;
+
         // Certifica-se de que o valor é um número
         const amount = parseFloat(item.amount || 0);
         if (item.type === 'revenue') {
@@ -766,7 +841,7 @@ router.get(
       res.json({
         year: yearNum,
         month: monthNum,
-        transactions: monthlyView,
+        monthlyView: monthlyView,
         summary, // NOVO: Incluído o objeto summary
       });
     } catch (error) {
@@ -891,16 +966,19 @@ router.get(
         );
         const installmentAmount = transaction.amount / totalInstallments;
 
-        // Calcular status (simplified)
-        let status = 'ativo';
+        // Calcular status baseado em datas e parcelas pagas
+        let status = 'UPCOMING';
         if (paidInstallments >= totalInstallments) {
-          status = 'concluído';
+          status = 'PAID';
         } else {
-          const expectedPaidByNow = Math.floor(
-            (today.getTime() - startDateObj.getTime()) /
-              (30 * 24 * 60 * 60 * 1000),
-          );
-          if (expectedPaidByNow > paidInstallments) status = 'atrasado';
+          // Verifica se a próxima parcela a ser paga está atrasada
+          const nextInstallmentDate = addMonths(startDateObj, paidInstallments);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+
+          if (isBefore(nextInstallmentDate, today)) {
+            status = 'OVERDUE';
+          }
         }
 
         return {
@@ -919,6 +997,174 @@ router.get(
       });
 
       res.json({ installmentPlans });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// Atualizar status de pagamento (parcelas pagas)
+router.patch(
+  '/transactions/:id/payment',
+  authenticateToken,
+  invalidateCache,
+  validateRequest(updatePaymentSchema),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const userId = req.user!.userId;
+      const { id } = req.params;
+
+      if (!id) {
+        return next(createError('ID da transação é obrigatório', 400));
+      }
+
+      const { paid_installments } = req.body;
+
+      let transactionId: string = id as string;
+      // Se vier um ID virtual (id_inst_1), extraímos o ID real
+      if (transactionId.includes('_inst_')) {
+        transactionId = transactionId.split('_inst_')[0]!;
+      }
+
+      const result = await DatabaseService.updatePaymentStatus(
+        transactionId,
+        userId,
+        paid_installments,
+      );
+
+      if (result?.error) {
+        return next(createError('Erro ao atualizar status de pagamento', 500));
+      }
+
+      res.json({
+        message: 'Status de pagamento atualizado com sucesso',
+        transaction: result.data,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// Alternar exclusão de mês para múltiplas transações (Batch)
+router.patch(
+  '/transactions/batch/exclude',
+  authenticateToken,
+  invalidateCache,
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const userId = req.user!.userId;
+      const updates = req.body; // Espera o array [{id, month, action}, ...]
+
+      if (!Array.isArray(updates)) {
+        return next(
+          createError('O corpo da requisição deve ser um array', 400),
+        );
+      }
+
+      const results = [];
+
+      for (const item of updates) {
+        const { id, month, action } = item;
+
+        if (!id || !month) continue;
+
+        const txResult = await DatabaseService.getFinancialTransactions(
+          userId,
+          { id },
+        );
+        const tx = txResult.data?.[0];
+
+        if (tx) {
+          let excludedMonths = tx.excluded_months || [];
+          const monthsToProcess = Array.isArray(month) ? month : [month];
+
+          if (action === 'add') {
+            monthsToProcess.forEach((m: string) => {
+              if (!excludedMonths.includes(m)) excludedMonths.push(m);
+            });
+          } else {
+            excludedMonths = excludedMonths.filter(
+              (m: string) => !monthsToProcess.includes(m),
+            );
+          }
+
+          await DatabaseService.updateFinancialTransaction(id, userId, {
+            excluded_months: excludedMonths,
+          });
+          results.push({ id, status: 'success' });
+        } else {
+          results.push({ id, status: 'not_found' });
+        }
+      }
+
+      res.json({ message: 'Processamento em lote concluído', results });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// Alternar exclusão de mês para recorrentes
+router.patch(
+  '/transactions/:id/exclude',
+  authenticateToken,
+  invalidateCache,
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const userId = req.user!.userId;
+      const { id } = req.params;
+      const { month, action } = req.body; // action: 'add' ou 'remove'
+
+      if (!id || !month) {
+        return next(createError('ID e mês são obrigatórios', 400));
+      }
+
+      // Busca a transação atual
+      const txResult = await DatabaseService.getFinancialTransactions(userId, {
+        id,
+      });
+      const tx = txResult.data?.[0];
+
+      if (!tx) {
+        return next(createError('Transação não encontrada', 404));
+      }
+
+      let excludedMonths = tx.excluded_months || [];
+      const monthsToProcess = Array.isArray(month) ? month : [month];
+
+      if (action === 'add') {
+        monthsToProcess.forEach((m: string) => {
+          if (!excludedMonths.includes(m)) {
+            excludedMonths.push(m);
+          }
+        });
+      } else {
+        excludedMonths = excludedMonths.filter(
+          (m: string) => !monthsToProcess.includes(m),
+        );
+      }
+
+      // Atualiza o banco
+      const result = await DatabaseService.updateFinancialTransaction(
+        id,
+        userId,
+        {
+          excluded_months: excludedMonths,
+        },
+      );
+
+      if (result.error) {
+        return next(createError('Erro ao atualizar exclusões', 500));
+      }
+
+      res.json({
+        message:
+          action === 'add'
+            ? 'Mês removido da recorrência'
+            : 'Mês restaurado na recorrência',
+        excluded_months: excludedMonths,
+      });
     } catch (error) {
       next(error);
     }
