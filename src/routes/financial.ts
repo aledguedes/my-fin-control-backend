@@ -609,7 +609,11 @@ router.get(
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const userId = req.user!.userId;
-      const { year: qYear, month: qMonth } = req.query; // Validar parâmetros (mantido por robustez, embora o Joi já faça)
+      const { year: qYear, month: qMonth, showHidden: qShowHidden } = req.query;
+
+      // Converte para boolean de forma robusta e sem erros de tipo
+      const showHidden =
+        qShowHidden !== undefined && String(qShowHidden) === 'true';
 
       if (!qYear || !qMonth) {
         return next(
@@ -712,8 +716,12 @@ router.get(
         const isRecurrent = tx.is_recurrent === 1 || tx.is_recurrent === true;
         if (isRecurrent) {
           const installmentsDataRecurrent = parseInstallments(tx.installments);
+
+          // Tenta pegar a data de início de vários campos possíveis
           let recurrenceStart =
             tx.recurrence_start_date ||
+            tx.start_date ||
+            tx.transaction_date ||
             installmentsDataRecurrent?.startDate ||
             null;
 
@@ -724,6 +732,15 @@ router.get(
           const occurrence = new Date(year, month - 1, getDate(start));
 
           if (isBefore(occurrence, start)) return;
+
+          // Lógica de Exclusão (Pular meses específicos ou marcar como ocultos)
+          const excludedMonths = tx.excluded_months || [];
+          const currentMonthKey = `${year}-${month.toString().padStart(2, '0')}`;
+          const isExcluded = excludedMonths.includes(currentMonthKey);
+
+          if (isExcluded && !showHidden) {
+            return; // Se estiver excluído e não pedimos para mostrar, pula
+          }
 
           const today = new Date();
           today.setHours(0, 0, 0, 0);
@@ -756,6 +773,7 @@ router.get(
             status: status,
             installment_number: monthDiff, // Enviamos o "mês" da recorrência para o front usar no PATCH
             paid_installments: paidCount,
+            isHidden: isExcluded,
           });
           return;
         }
@@ -799,6 +817,9 @@ router.get(
       let totalExpense = 0;
 
       monthlyView.forEach((item) => {
+        // Ignora itens ocultos do cálculo do sumário
+        if (item.isHidden) return;
+
         // Certifica-se de que o valor é um número
         const amount = parseFloat(item.amount || 0);
         if (item.type === 'revenue') {
@@ -820,7 +841,7 @@ router.get(
       res.json({
         year: yearNum,
         month: monthNum,
-        transactions: monthlyView,
+        monthlyView: monthlyView,
         summary, // NOVO: Incluído o objeto summary
       });
     } catch (error) {
@@ -1018,6 +1039,131 @@ router.patch(
       res.json({
         message: 'Status de pagamento atualizado com sucesso',
         transaction: result.data,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// Alternar exclusão de mês para múltiplas transações (Batch)
+router.patch(
+  '/transactions/batch/exclude',
+  authenticateToken,
+  invalidateCache,
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const userId = req.user!.userId;
+      const updates = req.body; // Espera o array [{id, month, action}, ...]
+
+      if (!Array.isArray(updates)) {
+        return next(
+          createError('O corpo da requisição deve ser um array', 400),
+        );
+      }
+
+      const results = [];
+
+      for (const item of updates) {
+        const { id, month, action } = item;
+
+        if (!id || !month) continue;
+
+        const txResult = await DatabaseService.getFinancialTransactions(
+          userId,
+          { id },
+        );
+        const tx = txResult.data?.[0];
+
+        if (tx) {
+          let excludedMonths = tx.excluded_months || [];
+          const monthsToProcess = Array.isArray(month) ? month : [month];
+
+          if (action === 'add') {
+            monthsToProcess.forEach((m: string) => {
+              if (!excludedMonths.includes(m)) excludedMonths.push(m);
+            });
+          } else {
+            excludedMonths = excludedMonths.filter(
+              (m: string) => !monthsToProcess.includes(m),
+            );
+          }
+
+          await DatabaseService.updateFinancialTransaction(id, userId, {
+            excluded_months: excludedMonths,
+          });
+          results.push({ id, status: 'success' });
+        } else {
+          results.push({ id, status: 'not_found' });
+        }
+      }
+
+      res.json({ message: 'Processamento em lote concluído', results });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// Alternar exclusão de mês para recorrentes
+router.patch(
+  '/transactions/:id/exclude',
+  authenticateToken,
+  invalidateCache,
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const userId = req.user!.userId;
+      const { id } = req.params;
+      const { month, action } = req.body; // action: 'add' ou 'remove'
+
+      if (!id || !month) {
+        return next(createError('ID e mês são obrigatórios', 400));
+      }
+
+      // Busca a transação atual
+      const txResult = await DatabaseService.getFinancialTransactions(userId, {
+        id,
+      });
+      const tx = txResult.data?.[0];
+
+      if (!tx) {
+        return next(createError('Transação não encontrada', 404));
+      }
+
+      let excludedMonths = tx.excluded_months || [];
+      const monthsToProcess = Array.isArray(month) ? month : [month];
+
+      if (action === 'add') {
+        monthsToProcess.forEach((m: string) => {
+          if (!excludedMonths.includes(m)) {
+            excludedMonths.push(m);
+          }
+        });
+      } else {
+        excludedMonths = excludedMonths.filter(
+          (m: string) => !monthsToProcess.includes(m),
+        );
+      }
+
+      // Atualiza o banco
+      const result = await DatabaseService.updateFinancialTransaction(
+        id,
+        userId,
+        {
+          excluded_months: excludedMonths,
+        },
+      );
+
+      if (result.error) {
+        return next(createError('Erro ao atualizar exclusões', 500));
+      }
+
+      res.json({
+        message:
+          action === 'add'
+            ? 'Mês removido da recorrência'
+            : 'Mês restaurado na recorrência',
+        excluded_months: excludedMonths,
       });
     } catch (error) {
       next(error);

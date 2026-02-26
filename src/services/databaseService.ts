@@ -128,6 +128,7 @@ export class DatabaseService {
       query = query.lte('transaction_date', filters.end_date);
     if (filters?.category_id)
       query = query.eq('category_id', filters.category_id);
+    if (filters?.id) query = query.eq('id', filters.id);
 
     const result = await query;
     return { data: result.data, error: result.error };
@@ -207,37 +208,46 @@ export class DatabaseService {
     userId: string | number,
     transactionData: any,
   ) {
-    const {
-      description,
-      amount,
-      type,
-      category_id,
-      transaction_date,
-      installment_number,
-      total_installments,
-      is_recurrent,
-      recurrence_start_date,
-      start_date,
-      payment_method,
-      installments,
-    } = transactionData;
+    // Mapeia os campos do camelCase do JS para o snake_case do Postgres/Supabase
+    const updateData: any = {};
+
+    if (transactionData.description !== undefined)
+      updateData.description = transactionData.description;
+    if (transactionData.amount !== undefined)
+      updateData.amount = transactionData.amount;
+    if (transactionData.type !== undefined)
+      updateData.type = transactionData.type;
+    if (transactionData.category_id !== undefined)
+      updateData.category_id = transactionData.category_id;
+    if (transactionData.transaction_date !== undefined)
+      updateData.transaction_date = transactionData.transaction_date;
+    if (transactionData.installment_number !== undefined)
+      updateData.installment_number = transactionData.installment_number;
+    if (transactionData.total_installments !== undefined)
+      updateData.total_installments = transactionData.total_installments;
+    if (transactionData.is_recurrent !== undefined)
+      updateData.is_recurrent = transactionData.is_recurrent;
+    if (transactionData.recurrence_start_date !== undefined)
+      updateData.recurrence_start_date = transactionData.recurrence_start_date;
+    if (transactionData.start_date !== undefined)
+      updateData.start_date = transactionData.start_date;
+    if (transactionData.payment_method !== undefined)
+      updateData.payment_method = transactionData.payment_method;
+    if (transactionData.installments !== undefined)
+      updateData.installments = transactionData.installments;
+    if (transactionData.paid_installments !== undefined)
+      updateData.paid_installments = transactionData.paid_installments;
+    if (transactionData.excluded_months !== undefined)
+      updateData.excluded_months = transactionData.excluded_months;
+
+    // Se houver transaction_date mas não start_date nas transações únicas, sincroniza
+    if (updateData.transaction_date && updateData.start_date === undefined) {
+      updateData.start_date = updateData.transaction_date;
+    }
 
     const result = await db
       .from('tbl_transactions')
-      .update({
-        description,
-        amount,
-        type,
-        category_id,
-        transaction_date,
-        installment_number,
-        total_installments,
-        start_date: start_date || transaction_date,
-        is_recurrent: is_recurrent,
-        recurrence_start_date: recurrence_start_date || null,
-        payment_method: payment_method || null,
-        installments: installments || null,
-      })
+      .update(updateData)
       .eq('id', id)
       .eq('user_id', userId)
       .select()
@@ -280,10 +290,9 @@ export class DatabaseService {
       .or(
         // Transações únicas no mês
         `and(is_installment.eq.false,is_recurrent.eq.false,transaction_date.gte.${startDate},transaction_date.lte.${endDate}),` +
-          // Transações recorrentes que começaram antes ou durante o mês
-          `and(is_recurrent.eq.true,recurrence_start_date.not.is.null,recurrence_start_date.lte.${endDate}),` +
+          // Transações recorrentes: busca se começaram antes ou durante o mês (com fallback para outras colunas de data)
+          `and(is_recurrent.eq.true,or(recurrence_start_date.lte.${endDate},start_date.lte.${endDate},transaction_date.lte.${endDate})),` +
           // Parcelamentos: busca todos os parcelamentos ativos
-          // O filtro por mês será feito no código JavaScript ao calcular as parcelas
           `is_installment.eq.true`,
       )
       .order('transaction_date', { ascending: true });

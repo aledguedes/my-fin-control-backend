@@ -103,6 +103,7 @@ export const shoppingCategorySchema = Joi.object({
 export const monthlyViewQuerySchema = Joi.object({
   year: Joi.number().integer().min(2020).max(2030).required(),
   month: Joi.number().integer().min(1).max(12).required(),
+  showHidden: Joi.boolean().optional(),
 });
 
 export const updatePaymentSchema = Joi.object({
