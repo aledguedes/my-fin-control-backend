@@ -8,7 +8,7 @@ interface CacheConfig {
 
 /**
  * Middleware de cache HTTP usando ETags e Last-Modified
- * 
+ *
  * Uso:
  * router.get('/endpoint', authenticateToken, cacheMiddleware(), handler)
  */
@@ -23,11 +23,11 @@ export const cacheMiddleware = (config: CacheConfig = {}) => {
 
     // Armazenar função original de res.json
     const originalJson = res.json.bind(res);
-    
+
     res.json = function (data: any) {
       // Calcular ETag baseado no conteúdo
       const etag = generateETag(data);
-      
+
       // Verificar If-None-Match do cliente
       const clientETag = req.headers['if-none-match'];
       if (clientETag && clientETag === etag) {
@@ -37,16 +37,16 @@ export const cacheMiddleware = (config: CacheConfig = {}) => {
 
       // Adicionar headers de cache
       res.set({
-        'ETag': etag,
+        ETag: etag,
         'Cache-Control': `private, max-age=${maxAge}${mustRevalidate ? ', must-revalidate' : ''}`,
-        'Vary': 'Authorization', // Cache varia por usuário (token)
+        Vary: 'Authorization', // Cache varia por usuário (token)
       });
 
       // Se os dados têm updated_at, usar como Last-Modified
       const lastModified = extractLastModified(data);
       if (lastModified) {
         res.set('Last-Modified', new Date(lastModified).toUTCString());
-        
+
         // Verificar If-Modified-Since
         const ifModifiedSince = req.headers['if-modified-since'];
         if (ifModifiedSince) {
@@ -90,7 +90,7 @@ function extractLastModified(data: any): string | null {
         if (item.updatedAt) return new Date(item.updatedAt).getTime();
         return null;
       })
-      .filter((d: any) => d !== null);
+      .filter((d): d is number => d !== null);
 
     if (dates.length === 0) return null;
     return new Date(Math.max(...dates)).toISOString();
@@ -107,7 +107,7 @@ function extractLastModified(data: any): string | null {
             if (item.updatedAt) return new Date(item.updatedAt).getTime();
             return null;
           })
-          .filter((d: any) => d !== null);
+          .filter((d): d is number => d !== null);
 
         if (dates.length > 0) {
           return new Date(Math.max(...dates)).toISOString();
@@ -134,9 +134,8 @@ export const invalidateCache = (
 ) => {
   res.set({
     'Cache-Control': 'no-cache, no-store, must-revalidate',
-    'Pragma': 'no-cache',
-    'Expires': '0',
+    Pragma: 'no-cache',
+    Expires: '0',
   });
   next();
 };
-

@@ -1,4 +1,5 @@
 import { databaseManager } from '../config/database';
+import { parseISO, differenceInMonths, isBefore, isAfter } from 'date-fns';
 
 const db = databaseManager.getDatabase();
 const dbConfig = databaseManager.getConfig();
@@ -212,6 +213,7 @@ export class DatabaseService {
       recurrence_start_date,
       start_date,
       payment_method,
+      installments,
     } = transactionData;
 
     const result = await db
@@ -228,6 +230,7 @@ export class DatabaseService {
         is_recurrent: is_recurrent,
         recurrence_start_date: recurrence_start_date || null,
         payment_method: payment_method || null,
+        installments: installments || null,
       })
       .eq('id', id)
       .eq('user_id', userId)
@@ -302,11 +305,38 @@ export class DatabaseService {
         const installments = tx.installments;
         const totalInstallments =
           tx.total_installments || installments?.totalInstallments || 1;
-        const paidInstallments =
-          installments?.paidInstallments ?? (tx.installment_number - 1 || 0);
-        const installmentAmount = tx.amount / totalInstallments;
-        const startDate =
+
+        const startDateStr =
           installments?.startDate || tx.start_date || tx.transaction_date;
+
+        // --- NOVO: Lógica para calcular parcelas pagas automaticamente ---
+        let paidInstallments = 0;
+        if (startDateStr) {
+          const startDate = parseISO(startDateStr);
+          const today = new Date();
+
+          if (
+            isBefore(startDate, today) ||
+            startDate.getTime() === today.getTime()
+          ) {
+            // Calcula quantos meses se passaram desde a data de início
+            // +1 porque a primeira parcela conta no mês de início
+            paidInstallments = differenceInMonths(today, startDate) + 1;
+          } else {
+            // Se a data de início for no futuro
+            paidInstallments = 0;
+          }
+        }
+
+        // Garante que o número de parcelas pagas não exceda o total
+        paidInstallments = Math.min(paidInstallments, totalInstallments);
+
+        // Se houver registro manual de parcelas pagas e for maior que o cálculo, usa o manual
+        const manualPaid =
+          installments?.paidInstallments ?? (tx.installment_number - 1 || 0);
+        paidInstallments = Math.max(paidInstallments, manualPaid);
+
+        const installmentAmount = tx.amount / totalInstallments;
 
         return {
           id: tx.id,
@@ -319,7 +349,7 @@ export class DatabaseService {
             0,
             totalInstallments - paidInstallments,
           ),
-          startDate,
+          startDate: startDateStr,
           status: paidInstallments >= totalInstallments ? 'concluído' : 'ativo',
           type: tx.type,
           category_id: tx.category_id,

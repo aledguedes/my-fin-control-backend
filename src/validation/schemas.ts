@@ -12,6 +12,7 @@ export const loginSchema = Joi.object({
 }).or('email', 'username');
 
 export const transactionSchema = Joi.object({
+  id: Joi.string().optional(),
   description: Joi.string().required(),
   amount: Joi.number().positive().required(),
   type: Joi.string().valid('revenue', 'expense').required(),

@@ -28,6 +28,6 @@
     "noPropertyAccessFromIndexSignature": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src/**/*", "api/**/*"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }

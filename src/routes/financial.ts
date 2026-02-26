@@ -387,24 +387,41 @@ router.put(
   '/transactions/:id',
   authenticateToken,
   invalidateCache,
+  normalizeTransactionPayload,
   validateRequest(transactionSchema),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const userId = req.user!.userId;
-      const { id } = req.params;
-      if (!id) {
+      const idParam = req.params['id'];
+
+      if (!idParam) {
         return next(createError('ID da transação é obrigatório', 400));
       }
+
+      let id: string = idParam as string;
+
+      // Trata IDs virtuais de parcelas (ex: uuid_inst_1)
+      if (id.includes('_inst_')) {
+        id = id.split('_inst_')[0]!;
+      }
+
       const {
         description,
         amount,
         type,
         category_id,
         transaction_date,
-        installment_number,
-        total_installments,
+        is_installment,
+        is_recurrent,
+        recurrence_start_date,
+        installments,
         payment_method,
       } = req.body;
+
+      // Extrair informações do objeto installments se existirem
+      const totalInstallments = installments?.total_installments || 1;
+      const startDate = installments?.start_date || transaction_date;
+      const installmentNumber = req.body.installment_number || 1;
 
       const result = await DatabaseService.updateFinancialTransaction(
         id,
@@ -415,9 +432,14 @@ router.put(
           type,
           category_id,
           transaction_date,
-          installment_number: installment_number || 1,
-          total_installments: total_installments || 1,
+          installment_number: installmentNumber,
+          total_installments: totalInstallments,
+          start_date: startDate,
+          is_installment,
+          is_recurrent,
+          recurrence_start_date,
           payment_method,
+          installments, // Passa o objeto completo para o DatabaseService
         },
       );
 
@@ -481,10 +503,17 @@ router.delete(
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const userId = req.user!.userId;
-      const { id } = req.params;
+      const idParam = req.params['id'];
 
-      if (!id) {
+      if (!idParam) {
         return next(createError('ID da transação é obrigatório', 400));
+      }
+
+      let id: string = idParam as string;
+
+      // Trata IDs virtuais de parcelas (ex: uuid_inst_1)
+      if (id.includes('_inst_')) {
+        id = id.split('_inst_')[0]!;
       }
 
       const result = await DatabaseService.deleteFinancialTransaction(
