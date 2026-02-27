@@ -695,10 +695,19 @@ router.get(
                 status = 'overdue';
               }
 
+              // Lógica de Exclusão para Parcelas
+              const excludedMonths = tx.excluded_months || [];
+              const currentMonthKey = `${year}-${month.toString().padStart(2, '0')}`;
+              const isExcluded = excludedMonths.includes(currentMonthKey);
+
+              if (isExcluded && !showHidden) {
+                continue; // Pula esta parcela se estiver oculta e não pedimos para mostrar
+              }
+
               monthlyView.push({
                 id: `${tx.id}_inst_${i}`,
                 parent_id: tx.id,
-                description: `${tx.description} (${i}/${totalInstallments})`,
+                description: tx.description,
                 amount: (tx.amount || 0) / totalInstallments,
                 type: tx.type,
                 date: due.toISOString().split('T')[0],
@@ -707,6 +716,7 @@ router.get(
                 category_id: tx.category_id,
                 isInstallment: true,
                 status: status.toUpperCase(), // Retorna em inglês (PAID, OVERDUE, UPCOMING)
+                isHidden: isExcluded,
               });
             }
           }
@@ -798,6 +808,15 @@ router.get(
               status = 'OVERDUE';
             }
 
+            // Lógica de Exclusão para Transações Únicas
+            const excludedMonths = tx.excluded_months || [];
+            const currentMonthKey = `${year}-${month.toString().padStart(2, '0')}`;
+            const isExcluded = excludedMonths.includes(currentMonthKey);
+
+            if (isExcluded && !showHidden) {
+              return; // Pula se estiver oculta
+            }
+
             monthlyView.push({
               id: tx.id,
               description: tx.description,
@@ -808,6 +827,7 @@ router.get(
               isInstallment: false,
               status: status,
               paid_installments: tx.paid_installments || 0,
+              isHidden: isExcluded,
             });
           }
         }
