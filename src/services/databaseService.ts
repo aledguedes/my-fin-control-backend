@@ -1338,6 +1338,75 @@ export class DatabaseService {
     };
   }
 
+  static async duplicateShoppingList(
+    baseListId: string | number,
+    newName: string,
+    userId: string | number,
+  ) {
+    // 1. Buscar itens da lista base
+    // Usamos getShoppingListWithItems para garantir que temos todos os itens
+    const baseListWithItems = await this.getShoppingListWithItems(
+      baseListId,
+      userId,
+    );
+
+    if (baseListWithItems.error || !baseListWithItems.data) {
+      return {
+        data: null,
+        error: baseListWithItems.error || { message: 'Lista base não encontrada' },
+      };
+    }
+
+    const { items } = baseListWithItems.data;
+
+    // 2. Criar a nova lista
+    const listInsert = await db
+      .from('tbl_shopping_lists')
+      .insert({
+        name: newName,
+        user_id: userId,
+        status: 'pending',
+      })
+      .select()
+      .single();
+
+    if (listInsert.error) {
+      return { data: null, error: listInsert.error };
+    }
+
+    const newList = listInsert.data;
+
+    // 3. Se a lista base não tiver itens, retorna apenas a nova lista
+    if (!items || items.length === 0) {
+      return { data: { ...newList, items: [] }, error: null };
+    }
+
+    // 4. Preparar itens para inserção na nova lista
+    const itemsToInsert = items.map((item: any) => ({
+      shopping_list_id: newList.id,
+      product_id: item.product_id,
+      quantity: item.quantity || 1,
+      price: 0, // Resetamos o preço para a nova lista
+      checked: false, // Resetamos o status de marcado
+    }));
+
+    const itemsInsert = await db
+      .from('tbl_shopping_list_items')
+      .insert(itemsToInsert)
+      .select();
+
+    if (itemsInsert.error) {
+      // Rollback: Deleta a lista criada se falhar a inserção dos itens
+      await db.from('tbl_shopping_lists').delete().eq('id', newList.id);
+      return { data: null, error: itemsInsert.error };
+    }
+
+    return {
+      data: { ...newList, items: itemsInsert.data || [] },
+      error: null,
+    };
+  }
+
   static async updatePaymentStatus(
     id: string | number,
     userId: string | number,

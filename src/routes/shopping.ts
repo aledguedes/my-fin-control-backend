@@ -7,6 +7,7 @@ import { cacheMiddleware, invalidateCache } from '../middleware/cache';
 
 import {
   shoppingListSchema,
+  duplicateShoppingListSchema,
   shoppingListItemSchema,
   productSchema,
   shoppingCategorySchema,
@@ -160,6 +161,76 @@ router.post(
           return res.status(400).json({ error: result.error.message });
         }
         return next(createError('Erro ao criar lista', 500));
+      }
+
+      res.status(201).json(result.data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * @swagger
+ * /shopping/lists/duplicate:
+ *   post:
+ *     summary: Duplicar lista de compras
+ *     description: Cria uma nova lista baseada em uma lista existente, copiando produtos e quantidades
+ *     tags:
+ *       - Compras - Listas
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - baseListId
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 description: Nome da nova lista
+ *                 example: Compras da Próxima Semana
+ *               baseListId:
+ *                 type: string
+ *                 description: ID da lista a ser copiada
+ *                 example: list_123
+ *     responses:
+ *       201:
+ *         description: Lista duplicada com sucesso
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ShoppingList'
+ *       400:
+ *         description: Dados inválidos
+ *       404:
+ *         description: Lista base não encontrada
+ *       500:
+ *         description: Erro ao duplicar lista
+ */
+// Duplicar lista de compras
+router.post(
+  '/lists/duplicate',
+  authenticateToken,
+  invalidateCache,
+  validateRequest(duplicateShoppingListSchema),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const userId = req.user!.userId;
+      const { name, baseListId } = req.body;
+
+      const result = await DatabaseService.duplicateShoppingList(
+        baseListId,
+        name,
+        userId,
+      );
+
+      if (result?.error) {
+        const statusCode =
+          result.error.message === 'Lista base não encontrada' ? 404 : 500;
+        return next(createError(result.error.message, statusCode));
       }
 
       res.status(201).json(result.data);
