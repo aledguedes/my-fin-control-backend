@@ -56,6 +56,11 @@ export const shoppingListSchema = Joi.object({
   items: Joi.array().items(Joi.string().uuid()).optional(),
 });
 
+export const duplicateShoppingListSchema = Joi.object({
+  name: Joi.string().min(1).max(200).required(),
+  baseListId: Joi.string().uuid().required(),
+});
+
 // Este schema define a estrutura completa de um item individual dentro do array 'items'
 export const fullShoppingListItemSchema = Joi.object({
   id: Joi.string().uuid().required(),
