@@ -1353,7 +1353,9 @@ export class DatabaseService {
     if (baseListWithItems.error || !baseListWithItems.data) {
       return {
         data: null,
-        error: baseListWithItems.error || { message: 'Lista base não encontrada' },
+        error: baseListWithItems.error || {
+          message: 'Lista base não encontrada',
+        },
       };
     }
 
@@ -1385,9 +1387,9 @@ export class DatabaseService {
     const itemsToInsert = items.map((item: any) => ({
       shopping_list_id: newList.id,
       product_id: item.product_id,
-      quantity: item.quantity || 1,
-      price: 0, // Resetamos o preço para a nova lista
-      checked: false, // Resetamos o status de marcado
+      quantity: 0,
+      price: 0,
+      checked: false,
     }));
 
     const itemsInsert = await db
