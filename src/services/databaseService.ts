@@ -177,11 +177,9 @@ export class DatabaseService {
       payment_method,
     };
 
-    const result = await db
-      .from('tbl_transactions')
-      .insert(dataToInsert)
-      .select()
-      .single();
+    const result = await this.withRetry(() =>
+      db.from('tbl_transactions').insert(dataToInsert).select().single(),
+    );
 
     return { data: result.data, error: result.error };
   }
@@ -227,14 +225,26 @@ export class DatabaseService {
       updateData.total_installments = transactionData.total_installments;
     if (transactionData.is_recurrent !== undefined)
       updateData.is_recurrent = transactionData.is_recurrent;
+    if (transactionData.is_installment !== undefined)
+      updateData.is_installment = transactionData.is_installment;
     if (transactionData.recurrence_start_date !== undefined)
       updateData.recurrence_start_date = transactionData.recurrence_start_date;
     if (transactionData.start_date !== undefined)
       updateData.start_date = transactionData.start_date;
     if (transactionData.payment_method !== undefined)
       updateData.payment_method = transactionData.payment_method;
-    if (transactionData.installments !== undefined)
-      updateData.installments = transactionData.installments;
+    if (transactionData.installments !== undefined) {
+      const inst = transactionData.installments;
+      updateData.installments = {
+        totalInstallments:
+          inst.total_installments || transactionData.total_installments,
+        paidInstallments:
+          inst.paid_installments !== undefined
+            ? inst.paid_installments
+            : transactionData.paid_installments,
+        startDate: inst.start_date || transactionData.start_date,
+      };
+    }
     if (transactionData.paid_installments !== undefined)
       updateData.paid_installments = transactionData.paid_installments;
     if (transactionData.excluded_months !== undefined)
@@ -245,13 +255,15 @@ export class DatabaseService {
       updateData.start_date = updateData.transaction_date;
     }
 
-    const result = await db
-      .from('tbl_transactions')
-      .update(updateData)
-      .eq('id', id)
-      .eq('user_id', userId)
-      .select()
-      .single();
+    const result = await this.withRetry(() =>
+      db
+        .from('tbl_transactions')
+        .update(updateData)
+        .eq('id', id)
+        .eq('user_id', userId)
+        .select()
+        .single(),
+    );
 
     return { data: result.data, error: result.error };
   }
@@ -300,14 +312,45 @@ export class DatabaseService {
     return { data: result.data, error: result.error };
   }
 
+  /**
+   * Helper para executar operações no banco com re-tentativa em caso de erro de conexão (fetch failed)
+   */
+  private static async withRetry<T>(
+    operation: () => Promise<T>,
+    retries = 3,
+  ): Promise<T> {
+    for (let i = 0; i < retries; i++) {
+      try {
+        return await operation();
+      } catch (error: any) {
+        const errorMsg = error?.message || '';
+        const isFetchError =
+          errorMsg.includes('fetch failed') ||
+          (error.cause && String(error.cause).includes('fetch failed'));
+
+        if (isFetchError && i < retries - 1) {
+          console.warn(
+            `[DatabaseService] Tentativa ${i + 1} falhou devido a erro de conexão (fetch failed). Tentando novamente em ${i + 1}s...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error('Falha de conexão com o banco após múltiplas tentativas.');
+  }
+
   static async getInstallmentPlans(userId: string | number) {
     try {
-      const result = await db
-        .from('tbl_transactions')
-        .select('*')
-        .eq('user_id', userId)
-        .gt('total_installments', 1)
-        .order('transaction_date', { ascending: true });
+      const result = await this.withRetry(() =>
+        db
+          .from('tbl_transactions')
+          .select('*')
+          .eq('user_id', userId)
+          .gt('total_installments', 1)
+          .order('transaction_date', { ascending: true }),
+      );
 
       if (result.error) {
         console.error('Erro na query getInstallmentPlans:', result.error);
