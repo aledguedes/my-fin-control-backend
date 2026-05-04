@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import { DatabaseService } from '../services/databaseService';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/auth';
 import {
@@ -422,6 +422,7 @@ router.put(
       // Extrair informações do objeto installments se existirem
       const totalInstallments = installments?.total_installments || 1;
       const startDate = installments?.start_date || transaction_date;
+      const paidInstallments = installments?.paid_installments ?? 0;
       const installmentNumber = req.body.installment_number || 1;
 
       const result = await DatabaseService.updateFinancialTransaction(
@@ -435,6 +436,7 @@ router.put(
           transaction_date,
           installment_number: installmentNumber,
           total_installments: totalInstallments,
+          paid_installments: paidInstallments,
           start_date: startDate,
           is_installment,
           is_recurrent,
