@@ -206,6 +206,58 @@ export class DatabaseService {
     userId: string | number,
     transactionData: any,
   ) {
+    const updateScope = transactionData.update_scope || 'all';
+    const isRecurrent = transactionData.is_recurrent === true;
+
+    // Cenário: Alteração em transação recorrente
+    if (isRecurrent && transactionData.amount !== undefined) {
+      // 1. Apenas este mês: Cria uma exceção (filha) e oculta este mês no pai
+      if (updateScope === 'single') {
+        const { data: parent } = await this.getFinancialTransactionById(
+          id,
+          userId,
+        );
+        if (!parent) return { data: null, error: { message: 'Pai não encontrado' } };
+
+        // Cria a transação filha
+        const childData = {
+          ...transactionData,
+          user_id: userId,
+          parent_transaction_id: id,
+          is_recurrent: false, // A filha é uma transação única
+        };
+        delete childData.update_scope;
+
+        const childResult = await this.createFinancialTransaction(childData);
+
+        // Adiciona o mês atual na lista de excluídos do pai
+        const date = parseISO(transactionData.transaction_date);
+        const monthKey = `${date.getFullYear()}-${(date.getMonth() + 1)
+          .toString()
+          .padStart(2, '0')}`;
+        const excluded = parent.excluded_months || [];
+        if (!excluded.includes(monthKey)) {
+          excluded.push(monthKey);
+          await db
+            .from('tbl_transactions')
+            .update({ excluded_months: excluded })
+            .eq('id', id);
+        }
+
+        return childResult;
+      }
+
+      // 2. Deste mês em diante: Adiciona ao histórico de valores
+      if (updateScope === 'future') {
+        await this.updateRecurrenceValue(
+          id as string,
+          transactionData.amount,
+          transactionData.transaction_date,
+        );
+        // Opcional: Atualiza outros campos (descrição, categoria) no pai
+      }
+    }
+
     // Mapeia os campos do camelCase do JS para o snake_case do Postgres/Supabase
     const updateData: any = {};
 
@@ -272,13 +324,80 @@ export class DatabaseService {
     id: string | number,
     userId: string | number,
   ) {
+    // 1. Busca a transação para saber se é recorrência ou exceção
+    const { data: tx } = await this.getFinancialTransactionById(id, userId);
+    if (!tx) return { data: null, error: { message: 'Transação não encontrada' } };
+
+    // 2. Se for uma exceção (filha), removemos o mês da lista de 'excluded_months' do pai
+    if (tx.parent_transaction_id) {
+      const { data: parent } = await this.getFinancialTransactionById(tx.parent_transaction_id, userId);
+      if (parent) {
+        const date = parseISO(tx.transaction_date);
+        const monthKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+        const excluded = parent.excluded_months || [];
+        const newExcluded = excluded.filter((m: string) => m !== monthKey);
+        
+        if (newExcluded.length !== excluded.length) {
+          await db.from('tbl_transactions').update({ excluded_months: newExcluded }).eq('id', parent.id);
+        }
+      }
+    }
+
+    // 3. Se for uma recorrência mestre, fazemos Deleção Suave (Soft Delete)
+    if (tx.is_recurrent && !tx.parent_transaction_id) {
+      // Define a data de fim como o dia anterior à transação atual ou hoje
+      // Isso faz com que ela pare de ser projetada para o futuro
+      const result = await db
+        .from('tbl_transactions')
+        .update({ end_date: tx.transaction_date })
+        .eq('id', id);
+      
+      return { data: { success: !result.error, softDeleted: true }, error: result.error };
+    }
+
+    // 4. Deleção física para transações únicas ou parcelas
     const result = await db
       .from('tbl_transactions')
       .delete()
       .eq('id', id)
       .eq('user_id', userId);
-    console.log('deleteFinancialTransaction result:', result);
+    
     return { data: { success: !result.error }, error: result.error };
+  }
+
+  /**
+   * Adiciona um novo valor ao histórico de uma transação recorrente
+   */
+  static async updateRecurrenceValue(
+    transactionId: string,
+    amount: number,
+    effectiveDate: string,
+  ) {
+    const result = await db
+      .from('tbl_transaction_value_history')
+      .insert({
+        transaction_id: transactionId,
+        amount,
+        effective_date: effectiveDate,
+      })
+      .select()
+      .single();
+
+    return { data: result.data, error: result.error };
+  }
+
+  /**
+   * Busca o histórico de valores para um conjunto de transações
+   */
+  static async getTransactionsValueHistory(transactionIds: string[]) {
+    if (!transactionIds.length) return { data: [], error: null };
+    const result = await db
+      .from('tbl_transaction_value_history')
+      .select('*')
+      .in('transaction_id', transactionIds)
+      .order('effective_date', { ascending: false });
+
+    return { data: result.data, error: result.error };
   }
 
   static async getMonthlyTransactions(
@@ -292,9 +411,7 @@ export class DatabaseService {
     const lastDay = new Date(year, month, 0).getDate();
     const endDate = `${year}-${monthStr}-${lastDay}`;
 
-    // Para parcelamentos, precisamos buscar todos que podem ter parcelas no mês consultado
-    // Buscamos todos os parcelamentos ativos (onde ainda há parcelas a pagar)
-    // O código JavaScript calculará quais parcelas específicas caem no mês consultado
+    // 1. Busca todas as transações (reais e recorrentes)
     const result = await db
       .from('tbl_transactions')
       .select('*')
@@ -302,14 +419,28 @@ export class DatabaseService {
       .or(
         // Transações únicas no mês
         `and(is_installment.eq.false,is_recurrent.eq.false,transaction_date.gte.${startDate},transaction_date.lte.${endDate}),` +
-          // Transações recorrentes: busca se começaram antes ou durante o mês (com fallback para outras colunas de data)
-          `and(is_recurrent.eq.true,or(recurrence_start_date.lte.${endDate},start_date.lte.${endDate},transaction_date.lte.${endDate})),` +
+          // Transações recorrentes: busca se começaram antes ou durante o mês e não "terminaram" antes
+          `and(is_recurrent.eq.true,or(recurrence_start_date.lte.${endDate},start_date.lte.${endDate},transaction_date.lte.${endDate}),or(end_date.is.null,end_date.gte.${startDate})),` +
           // Parcelamentos: busca todos os parcelamentos ativos
           `is_installment.eq.true`,
       )
       .order('transaction_date', { ascending: true });
 
-    return { data: result.data, error: result.error };
+    if (result.error) return { data: null, error: result.error };
+
+    // 2. Busca o histórico de valores para as transações retornadas
+    const transactionIds = (result.data || []).map((tx: any) => tx.id);
+    const historyResult = await this.getTransactionsValueHistory(transactionIds);
+
+    // 3. Acopla o histórico de valores nos objetos de transação para processamento posterior
+    const transactionsWithHistory = (result.data || []).map((tx: any) => {
+      const history = (historyResult.data || []).filter(
+        (h: any) => h.transaction_id === tx.id,
+      );
+      return { ...tx, value_history: history };
+    });
+
+    return { data: transactionsWithHistory, error: null };
   }
 
   /**

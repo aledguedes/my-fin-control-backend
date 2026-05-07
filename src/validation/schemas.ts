@@ -44,6 +44,7 @@ export const transactionSchema = Joi.object({
         then: Joi.valid(Joi.ref('transaction_date')).required(),
       }),
   }).required(),
+  update_scope: Joi.string().valid('single', 'future', 'all').optional(),
 });
 
 export const financialCategorySchema = Joi.object({

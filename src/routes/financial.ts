@@ -443,6 +443,7 @@ router.put(
           recurrence_start_date,
           payment_method,
           installments, // Passa o objeto completo para o DatabaseService
+          update_scope: req.body.update_scope,
         },
       );
 
@@ -602,6 +603,20 @@ function parseInstallments(installments: any): any {
   return null;
 }
 
+// Função auxiliar para buscar o valor correto no histórico baseado na data
+function getAmountFromHistory(
+  history: any[],
+  targetDate: Date,
+  defaultAmount: number,
+): number {
+  if (!history || history.length === 0) return defaultAmount;
+  // O histórico vem ordenado por data decrescente (do mais recente para o mais antigo)
+  const validEntry = history.find(
+    (h) => !isBefore(targetDate, parseISO(h.effective_date)),
+  );
+  return validEntry ? parseFloat(validEntry.amount) : defaultAmount;
+}
+
 // Visão mensal consolidada
 router.get(
   '/summary/monthly-view',
@@ -658,6 +673,12 @@ router.get(
       const year = yearNum;
       const month = monthNum; // 1-12
 
+      // Identifica transações que são "exceções" (filhas) para este mês
+      // Elas substituirão a projeção do "pai"
+      const currentMonthOverrides = transactions
+        .filter((tx: any) => tx.parent_transaction_id)
+        .map((tx: any) => tx.parent_transaction_id);
+
       transactions.forEach((tx: any) => {
         // --- Lógica para Transações Parceladas (Geração de Parcelas Virtuais) ---
         // Normaliza campos que podem ser armazenados como JSON ou colunas
@@ -706,6 +727,11 @@ router.get(
                 continue; // Pula esta parcela se estiver oculta e não pedimos para mostrar
               }
 
+              // Se este mês já tem uma transação real/exceção para este pai, pula a projeção da parcela
+              if (currentMonthOverrides.includes(tx.id)) {
+                continue;
+              }
+
               monthlyView.push({
                 id: `${tx.id}_inst_${i}`,
                 parent_id: tx.id,
@@ -719,6 +745,7 @@ router.get(
                 isInstallment: true,
                 status: status.toUpperCase(), // Retorna em inglês (PAID, OVERDUE, UPCOMING)
                 isHidden: isExcluded,
+                isVirtual: true,
               });
             }
           }
@@ -774,10 +801,22 @@ router.get(
             status = 'OVERDUE';
           }
 
+          // Se este mês já tem uma transação real/exceção para este pai, pula a projeção
+          if (currentMonthOverrides.includes(tx.id)) {
+            return;
+          }
+
+          // Busca o valor vigente no histórico para este mês
+          const effectiveAmount = getAmountFromHistory(
+            tx.value_history,
+            occurrence,
+            tx.amount,
+          );
+
           monthlyView.push({
             id: tx.id,
             description: tx.description,
-            amount: tx.amount,
+            amount: effectiveAmount,
             type: tx.type,
             date: occurrence.toISOString().split('T')[0],
             category_id: tx.category_id,
@@ -786,6 +825,8 @@ router.get(
             installment_number: monthDiff, // Enviamos o "mês" da recorrência para o front usar no PATCH
             paid_installments: paidCount,
             isHidden: isExcluded,
+            isVirtual: true,
+            hasHistory: tx.value_history && tx.value_history.length > 1,
           });
           return;
         }
@@ -830,6 +871,7 @@ router.get(
               status: status,
               paid_installments: tx.paid_installments || 0,
               isHidden: isExcluded,
+              isException: !!tx.parent_transaction_id,
             });
           }
         }
