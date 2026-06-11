@@ -746,6 +746,7 @@ router.get(
                 status: status.toUpperCase(), // Retorna em inglês (PAID, OVERDUE, UPCOMING)
                 isHidden: isExcluded,
                 isVirtual: true,
+                start_date: startDateStr, // Data de início das parcelas
               });
             }
           }
@@ -827,6 +828,7 @@ router.get(
             isHidden: isExcluded,
             isVirtual: true,
             hasHistory: tx.value_history && tx.value_history.length > 1,
+            recurrence_start_date: recurrenceStart, // Data de início da recorrência
           });
           return;
         }
@@ -872,6 +874,8 @@ router.get(
               paid_installments: tx.paid_installments || 0,
               isHidden: isExcluded,
               isException: !!tx.parent_transaction_id,
+              start_date: tx.start_date || null, // Data de início (parcelamento/recorrência)
+              recurrence_start_date: tx.recurrence_start_date || null, // Data de início da recorrência
             });
           }
         }
